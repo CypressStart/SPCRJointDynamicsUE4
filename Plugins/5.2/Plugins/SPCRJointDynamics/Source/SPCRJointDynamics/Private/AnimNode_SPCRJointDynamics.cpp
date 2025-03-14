@@ -142,9 +142,6 @@ void FAnimNode_SPCRJointDynamics::EvaluateSkeletalControl_AnyThread(FComponentSp
 			while (_WindForceRadians < -3.141592f) _WindForceRadians += 3.141592f * 2.0f;
 			ActiveWindForce = WindForce * (FMath::Sin(_WindForceRadians) * 0.5f + 0.5f);
 		}
-
-		CaptureLengthForAngleLock(Output);
-
 		UpdateControlPoints(Output, ActiveWindForce, ONE_STEP_DELTA);
 
 		// 拘束の更新
@@ -173,7 +170,7 @@ void FAnimNode_SPCRJointDynamics::EvaluateSkeletalControl_AnyThread(FComponentSp
 
 		if (bLimitAngle)
 		{
-			UpdateLockAngles(Output);
+			UpdateLockAngles();
 		}
 	}
 
@@ -565,18 +562,11 @@ void FAnimNode_SPCRJointDynamics::UpdateControlPoints(FComponentSpacePoseContext
 		{
 			auto& Point = Points[iPoint];
 
-			FVector movementDisplacement = Point.Position - Point.PositionPrev;
-			if (bLimitAngle)
-			{
-				FVector movDispNorm = movementDisplacement.GetSafeNormal();
-				movementDisplacement = movDispNorm * FMath::Min(movementDisplacement.Length(), MaxDisplacementLength);
-			}
-
 			FVector Displacement;
 			Displacement  = Gravity * Point.Gravity;
 			Displacement += Wind;
 			Displacement *= StepTime_x2_Half;
-			Displacement += movementDisplacement;
+			Displacement += Point.Position - Point.PositionPrev;
 			Displacement *= Point.Resistance;
 			Displacement *= 1.0f - FMath::Clamp(Point.Friction, 0.0f, 1.0f);
 
@@ -987,6 +977,7 @@ void FAnimNode_SPCRJointDynamics::UpdateSurfaceCollision(float CollisionSubDelta
 							OutPointOnCollider += ColliderToEndVec * (CEDotCI / LineDot);
 							FVector TowardsCollider = OutPointOnCollider - OutIntersectionPoint;
 							return TowardsCollider.SizeSquared() <= OutRadius * OutRadius;
+							return false;
 						}
 					}
 				}
@@ -1167,83 +1158,44 @@ void FAnimNode_SPCRJointDynamics::ApplyToBone(FComponentSpacePoseContext& Output
 //======================================================================================
 //
 //======================================================================================
-void FAnimNode_SPCRJointDynamics::CaptureLengthForAngleLock(FComponentSpacePoseContext& Output)
+void FAnimNode_SPCRJointDynamics::UpdateLockAngles()
 {
-	{
-		const auto& ToWorld = Output.AnimInstanceProxy->GetComponentTransform();
-		for (auto&& Points : _PointsTbl)
-		{
-			for (auto&& Point : Points)
-			{
-				if (Point.bVirtual || Point.pParent == nullptr)
-					continue;
-
-				auto& Parent = *Point.pParent;
-
-				auto CSPosition = ToWorld.InverseTransformPosition(Point.Position);
-				auto PCSPosition = ToWorld.InverseTransformPosition(Parent.Position);
-
-				Point.DistanceFromParent = (PCSPosition - CSPosition).Length();
-
-			}
-		}
-	}
-}
-
-//======================================================================================
-//
-//======================================================================================
-void FAnimNode_SPCRJointDynamics::UpdateLockAngles(FComponentSpacePoseContext& Output)
-{
-	CaptureLengthForAngleLock(Output);
-
 	for (auto&& Points : _PointsTbl)
 	{
 		for (auto&& Point : Points)
 		{
 			if (Point.bVirtual)
 				continue;
-			LockAngles(Point, Output);
+			LockAngles(&Point);
 		}
 	}
 }
 
+
 //======================================================================================
 //
 //======================================================================================
-void FAnimNode_SPCRJointDynamics::LockAngles(SPCRPoint& spcrPoint, FComponentSpacePoseContext& Output)
+void FAnimNode_SPCRJointDynamics::LockAngles(SPCRPoint* spcrPoint)
 {
-	if (spcrPoint.pParent == nullptr)
+	if (spcrPoint->pParent == nullptr)
 		return;
 
-	if (BoneIndicesToAffect != -1 && spcrPoint.BoneIndex > BoneIndicesToAffect)
+	FVector SuperParentPosition = spcrPoint->pParent->pParent != nullptr ? spcrPoint->pParent->pParent->Position : spcrPoint->pParent->Position;
+
+	FVector boneDir = spcrPoint->Position - spcrPoint->pParent->Position;
+	FVector parentBoneDir = spcrPoint->pParent->Position - SuperParentPosition;
+
+	if (parentBoneDir.Size() == 0 || bLimitFromRoot)
 	{
-		return;
+		parentBoneDir = spcrPoint->InitialWorldPosition - spcrPoint->pParent->InitialWorldPosition;
 	}
 
-	SPCRPoint& parent = *spcrPoint.pParent;
-
-	FVector SuperParentPosition = parent.pParent != nullptr ? parent.pParent->Position : parent.Position;
-
-	FVector boneDir = spcrPoint.Position - parent.Position;
-	FVector parentBoneDir = spcrPoint.InitialWorldPosition - parent.InitialWorldPosition;
-
-	float angleMax = AngleLimitInDegree;
 	float angle = FMath::RadiansToDegrees(FMath::Acos(FVector::DotProduct(parentBoneDir.GetSafeNormal(), boneDir.GetSafeNormal())));
-
-	if (!bLimitFromRoot)
-	{
-		angleMax = AngleLimitInDegree * (float)spcrPoint.BoneIndex.GetInt();
-		angleMax = FMath::Clamp(angleMax, 0.0f, 180.0f);
-	}
-
-	float remainingAngle = angle - angleMax;
+	float remainingAngle = angle - AngleLimitInDegree;
 	if (remainingAngle > 0.0f)
 	{
 		FVector handleAxis = FVector::CrossProduct(parentBoneDir, boneDir).GetSafeNormal();
-		FVector newPosition = parent.Position + boneDir.RotateAngleAxis(-remainingAngle, handleAxis).GetSafeNormal() * spcrPoint.DistanceFromParent;
-		FVector difference = newPosition - spcrPoint.Position;
-		spcrPoint.Position = newPosition;
+		spcrPoint->Position = spcrPoint->pParent->Position + boneDir.RotateAngleAxis(-remainingAngle, handleAxis);
 	}
 }
 
@@ -1505,6 +1457,7 @@ void FAnimNode_SPCRJointDynamics::CreateControlPoints(FComponentSpacePoseContext
 			//Pt.Damping = FMath::Clamp(Damping * DampingCurve.ComputeCurve(Pt.OrderRate), 0.0f, 0.99f);
 			Pt.Drag = FMath::Clamp(DragCoefficient * DragCurve.ComputeCurve(Pt.OrderRate), 0.0f, 1.0f);
 			Pt.Lift = LiftCoefficient * FMath::Clamp(LiftCurve.ComputeCurve(Pt.OrderRate), 0.0f, 1.0f);
+			Pt.LimitStrength = LimitCurve.ComputeCurve(Pt.OrderRate);
 			Pt.bVirtual = false;
 			Points.Add(Pt);
 		}
@@ -1522,6 +1475,7 @@ void FAnimNode_SPCRJointDynamics::CreateControlPoints(FComponentSpacePoseContext
 			//Pt.Damping = FMath::Clamp(Damping * DampingCurve.ComputeCurve(Pt.OrderRate), 0.0f, 0.99f);
 			Pt.Drag = FMath::Clamp(DragCoefficient * DragCurve.ComputeCurve(Pt.OrderRate), 0.0f, 1.0f);
 			Pt.Lift = LiftCoefficient * FMath::Clamp(LiftCurve.ComputeCurve(Pt.OrderRate), 0.0f, 1.0f);
+			Pt.LimitStrength = LimitCurve.ComputeCurve(Pt.OrderRate);
 			Pt.bVirtual = true;
 			Points.Add(Pt);
 		}
@@ -1570,8 +1524,6 @@ void FAnimNode_SPCRJointDynamics::CreateControlPoints(FComponentSpacePoseContext
 		for (int32 iPoint = 1; iPoint < PointNum; ++iPoint)
 		{
 			Points[iPoint].pParent = &Points[iPoint - 1];
-			
-			Points[iPoint].DistanceFromParent = (Points[iPoint].Position - Points[iPoint].pParent->Position).Length();
 		}
 	}
 

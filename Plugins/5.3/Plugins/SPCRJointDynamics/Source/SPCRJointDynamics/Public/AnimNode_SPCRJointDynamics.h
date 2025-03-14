@@ -169,7 +169,7 @@ struct SPCRPoint
 	//float Damping;
 	float Drag;
 	float Lift;
-	float DistanceFromParent;
+	float LimitStrength;
 
 	bool bVirtual;
 
@@ -187,7 +187,7 @@ struct SPCRPoint
 		//, Damping(0.0f)
 		, Drag(0.0f)
 		, Lift(0.0f)
-		, DistanceFromParent(1.0f)
+		, LimitStrength(0.0f)
 		, bVirtual(false)
 	{
 	}
@@ -391,13 +391,10 @@ struct SPCRJOINTDYNAMICS_API FAnimNode_SPCRJointDynamics : public FAnimNode_Skel
 	float AngleLimitInDegree = 0.0f;
 
 	UPROPERTY(EditAnywhere, Category = Limit, meta = (EditCondition = bLimitAngle))
-	int32 BoneIndicesToAffect = -1;
+	FSPCRCurve LimitCurve;
 
 	UPROPERTY(EditAnywhere, Category = Limit, meta = (EditCondition = bLimitAngle))
 	bool bLimitFromRoot = false;
-
-	UPROPERTY(EditAnywhere, Category = Limit, meta = (EditCondition = bLimitAngle))
-	float MaxDisplacementLength = 10.0f;
 
 	UPROPERTY(EditAnywhere, Category = Debug_Draw)
 	bool bDebugDrawConstraints = false;
@@ -493,9 +490,8 @@ private:
 	void CreateConstraintBendingHorizontal(TArray<SPCRConstraint>& Out, TArray<TArray<SPCRPoint>>& PointsTbl, bool IsCollision);
 	void CreateConstraintShear(TArray<SPCRConstraint>& Out, TArray<TArray<SPCRPoint>>& PointsTbl, bool IsCollision);
 
-	void CaptureLengthForAngleLock(FComponentSpacePoseContext& Output);
-	void UpdateLockAngles(FComponentSpacePoseContext& Output);
-	void LockAngles(SPCRPoint& spcrPoint, FComponentSpacePoseContext& Output);
+	void UpdateLockAngles();
+	void LockAngles(SPCRPoint* spcrPoint);
 
 public:
 

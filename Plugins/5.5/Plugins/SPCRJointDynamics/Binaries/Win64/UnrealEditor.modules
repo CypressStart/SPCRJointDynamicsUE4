@@ -1,8 +1,0 @@
-{
-	"BuildId": "37670630",
-	"Modules": 
-	{
-		"SPCRJointDynamics": "UnrealEditor-SPCRJointDynamics.dll",
-		"SPCRJointDynamicsEd": "UnrealEditor-SPCRJointDynamicsEd.dll"
-	}
-}
